@@ -163,7 +163,7 @@ function stopVideo(video: HTMLVideoElement) {
 
 async function main() {
   const model = await loadGraphModel(
-    "/models/yolov8n-pose_web_model/model.json"
+    import.meta.env.BASE_URL + "models/yolov8n-pose_web_model/model.json"
   );
   const video = document.querySelector("video")!;
   const toggle = document.querySelector("button")!;
