@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Letterbox Output Processing</title>
+    <style>
+      main {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      .container {
+        display: grid;
+        grid-auto-flow: column;
+        gap: 1rem;
+      }
+      .original {
+        position: relative;
+      }
+      .original canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Computer Vision Web</h1>
+      <nav>
+        <ul>
+          <li><a href="/01-input-processing.html">Input Processing</a></li>
+          <li><a href="/02-output-processing.html">Output Processing</a></li>
+          <li>
+            <a href="/03-letterbox-input-processing.html"
+              >Letterbox Input Processing</a
+            >
+          </li>
+          <li>
+            <a href="/04-letterbox-output-processing.html"
+              >Letterbox Output Processing</a
+            >
+          </li>
+          <li><a href="/05-live-video.html">Live Video</a></li>
+        </ul>
+      </nav>
+    </header>
+    <main>
+      <h2>Letterbox Output Processing</h2>
+      <details name="examples">
+        <summary>640x640</summary>
+        <div class="container">
+          <div class="original">
+            <img src="/640x640.jpg" alt="" />
+            <canvas data-image></canvas>
+          </div>
+          <canvas data-model></canvas>
+        </div>
+      </details>
+      <details name="examples">
+        <summary>432x432</summary>
+        <div class="container">
+          <div class="original">
+            <img src="/432x432.jpg" alt="" />
+            <canvas data-image></canvas>
+          </div>
+          <canvas data-model></canvas>
+        </div>
+      </details>
+      <details name="examples">
+        <summary>720x405</summary>
+        <div class="container">
+          <div class="original">
+            <img src="/720x405.jpg" alt="" />
+            <canvas data-image></canvas>
+          </div>
+          <canvas data-model></canvas>
+        </div>
+      </details>
+      <details name="examples">
+        <summary>250x405</summary>
+        <div class="container">
+          <div class="original">
+            <img src="/250x405.jpg" alt="" />
+            <canvas data-image></canvas>
+          </div>
+          <canvas data-model></canvas>
+        </div>
+      </details>
+    </main>
+    <script
+      type="module"
+      src="./src/04-letterbox-output-processing.ts"
+    ></script>
+  </body>
+</html>
