@@ -1,7 +1,7 @@
 import {
   loadGraphModel,
   browser as tfBrowser,
-  dispose,
+  tidy,
   type Tensor3D,
   GraphModel,
   slice,
@@ -43,11 +43,11 @@ function renderPosePredictions(props: {
   }
 }
 
-async function getBestPrediction(predictions: Tensor3D): Promise<{
+function getBestPrediction(predictions: Tensor3D): {
   box: number[];
   score: number;
   keypoints: [number, number, number][];
-}> {
+} {
   const transpose = predictions.transpose([0, 2, 1]);
   const w = slice(transpose, [0, 0, 2], [-1, -1, 1]);
   const h = slice(transpose, [0, 0, 3], [-1, -1, 1]);
@@ -57,7 +57,7 @@ async function getBestPrediction(predictions: Tensor3D): Promise<{
   const y2 = add(y1, h);
   const scores = slice(transpose, [0, 0, 4], [-1, -1, 1]);
   const keypoints = slice(transpose, [0, 0, 5], [-1, -1, -1]);
-  const scoresData = await scores.data();
+  const scoresData = scores.dataSync();
   const maxScoreIndex = scoresData.indexOf(Math.max(...scoresData));
   const bestBox = squeeze(
     concat(
@@ -75,7 +75,7 @@ async function getBestPrediction(predictions: Tensor3D): Promise<{
     slice(keypoints, [0, maxScoreIndex, 0], [1, 1, -1])
   );
 
-  const keypointsData = [...(await bestKeypoints.data())];
+  const keypointsData = [...bestKeypoints.dataSync()];
   const keypointsFormatted: [number, number, number][] = [];
   for (let i = 0; i < keypointsData.length; i += 3) {
     keypointsFormatted.push([
@@ -84,9 +84,8 @@ async function getBestPrediction(predictions: Tensor3D): Promise<{
       keypointsData[i + 2],
     ]);
   }
-  dispose([transpose, w, h, x1, y1, x2, y2, scores, keypoints]);
   return {
-    box: [...(await bestBox.data())],
+    box: [...bestBox.dataSync()],
     score: bestScore,
     keypoints: keypointsFormatted,
   };
@@ -98,52 +97,52 @@ async function processImage(
   imageCanvas: HTMLCanvasElement,
   modelCanvas: HTMLCanvasElement
 ) {
-  const [modelHeight, modelWidth] = model.inputs[0].shape!.slice(1, 3);
-  imageCanvas.width = image.width;
-  imageCanvas.height = image.height;
-  modelCanvas.width = modelWidth;
-  modelCanvas.height = modelHeight;
+  tidy(() => {
+    const [modelHeight, modelWidth] = model.inputs[0].shape!.slice(1, 3);
+    imageCanvas.width = image.width;
+    imageCanvas.height = image.height;
+    modelCanvas.width = modelWidth;
+    modelCanvas.height = modelHeight;
 
-  const input = tfBrowser.fromPixels(image).toFloat().div(255);
-  const maxDim = Math.max(image.width, image.height);
-  const padWidth = maxDim - image.width;
-  const padHeight = maxDim - image.height;
-  const dx = Math.floor(padWidth / 2);
-  const dy = Math.floor(padHeight / 2);
-  const scale = maxDim / modelWidth;
+    const input = tfBrowser.fromPixels(image).toFloat().div(255);
+    const maxDim = Math.max(image.width, image.height);
+    const padWidth = maxDim - image.width;
+    const padHeight = maxDim - image.height;
+    const dx = Math.floor(padWidth / 2);
+    const dy = Math.floor(padHeight / 2);
+    const scale = maxDim / modelWidth;
 
-  const padded = input.pad<Tensor3D>([
-    [dy, padHeight - dy],
-    [dx, padWidth - dx],
-    [0, 0],
-  ]);
+    const padded = input.pad<Tensor3D>([
+      [dy, padHeight - dy],
+      [dx, padWidth - dx],
+      [0, 0],
+    ]);
 
-  const resized = padded.resizeBilinear<Tensor3D>([640, 640]);
-  tfBrowser.toPixels(resized, modelCanvas);
-  const batched = resized.expandDims(0);
-  const predictions = model.predict(batched) as Tensor3D;
-  const bestPrediction = await getBestPrediction(predictions);
-  renderPosePredictions({
-    ctx: imageCanvas.getContext("2d")!,
-    keypoints: bestPrediction?.keypoints ?? [],
-    width: image.width,
-    height: image.height,
-    source: image,
-    scale,
-    dx,
-    dy,
+    const resized = padded.resizeBilinear<Tensor3D>([640, 640]);
+    tfBrowser.toPixels(resized, modelCanvas);
+    const batched = resized.expandDims(0);
+    const predictions = model.predict(batched) as Tensor3D;
+    const bestPrediction = getBestPrediction(predictions);
+    renderPosePredictions({
+      ctx: imageCanvas.getContext("2d")!,
+      keypoints: bestPrediction?.keypoints ?? [],
+      width: image.width,
+      height: image.height,
+      source: image,
+      scale,
+      dx,
+      dy,
+    });
+    renderPosePredictions({
+      ctx: modelCanvas.getContext("2d")!,
+      keypoints: bestPrediction?.keypoints ?? [],
+      width: modelWidth,
+      height: modelHeight,
+      scale: 1,
+      dx: 0,
+      dy: 0,
+    });
   });
-  renderPosePredictions({
-    ctx: modelCanvas.getContext("2d")!,
-    keypoints: bestPrediction?.keypoints ?? [],
-    width: modelWidth,
-    height: modelHeight,
-    scale: 1,
-    dx: 0,
-    dy: 0,
-  });
-
-  dispose([input, padded, resized, batched, predictions]);
 }
 
 async function main() {

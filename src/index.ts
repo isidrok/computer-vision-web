@@ -1,7 +1,7 @@
 import {
   loadGraphModel,
   browser as tfBrowser,
-  dispose,
+  tidy,
   slice,
   sub,
   div,
@@ -155,7 +155,7 @@ function renderPrediction(props: RenderPredictionProps): void {
  *                     8400 predictions: different potential detections across the image
  * @returns Promise resolving to the best prediction with bounding box, score, and keypoints
  */
-async function getBestPrediction(predictions: Tensor3D): Promise<Prediction> {
+function getBestPrediction(predictions: Tensor3D): Prediction {
   // Reshape predictions from [1, 56, 8400] to [1, 8400, 56] for easier processing
   // Each of the 8400 predictions now has 56 values: [x, y, w, h, conf, kpt1_x, kpt1_y, kpt1_c, ...]
   const reshapedPredictions = predictions.transpose([0, 2, 1]);
@@ -179,7 +179,7 @@ async function getBestPrediction(predictions: Tensor3D): Promise<Prediction> {
   const allKeypoints = slice(reshapedPredictions, [0, 0, 5], [-1, -1, -1]); // All remaining 51 values (17 keypts × 3)
 
   // Find the prediction with highest confidence
-  const scoresArray = await confidenceScores.data();
+  const scoresArray = confidenceScores.dataSync();
   const bestPredictionIndex = scoresArray.indexOf(Math.max(...scoresArray));
   const bestConfidence = scoresArray[bestPredictionIndex];
 
@@ -202,7 +202,7 @@ async function getBestPrediction(predictions: Tensor3D): Promise<Prediction> {
   );
 
   // Convert keypoints tensor to array and group into [x, y, confidence] triplets
-  const keypointsData = [...(await bestKeypointsTensor.data())];
+  const keypointsData = [...bestKeypointsTensor.dataSync()];
   const formattedKeypoints: Keypoint[] = [];
 
   for (let i = 0; i < keypointsData.length; i += 3) {
@@ -212,26 +212,7 @@ async function getBestPrediction(predictions: Tensor3D): Promise<Prediction> {
     formattedKeypoints.push([x, y, confidence]);
   }
 
-  const boxData = [...(await bestBoundingBox.data())] as BoundingBox;
-
-  // Clean up tensors to prevent memory leaks
-  dispose([
-    reshapedPredictions,
-    centerX,
-    centerY,
-    width,
-    height,
-    halfWidth,
-    halfHeight,
-    x1,
-    y1,
-    x2,
-    y2,
-    confidenceScores,
-    allKeypoints,
-    bestBoundingBox,
-    bestKeypointsTensor,
-  ]);
+  const boxData = [...bestBoundingBox.dataSync()] as BoundingBox;
 
   return {
     box: boxData,
@@ -298,9 +279,6 @@ function processImageWithLetterboxing(
   const xOffset = leftPadding; // X displacement caused by letterboxing
   const yOffset = topPadding; // Y displacement caused by letterboxing
 
-  // Clean up intermediate tensors
-  dispose([originalImageTensor, letterboxedImage, resizedImage]);
-
   return {
     processedImage: batchedImage as Tensor3D,
     transformParams: {
@@ -332,31 +310,29 @@ async function main(): Promise<void> {
   const modelURL =
     import.meta.env.BASE_URL + "models/yolov8n-pose_web_model/model.json";
   const model = await loadGraphModel(modelURL);
+  tidy(() => {
+    // Process image with letterboxing to maintain aspect ratio
+    const { processedImage, transformParams } = processImageWithLetterboxing(
+      image,
+      model
+    );
 
-  // Process image with letterboxing to maintain aspect ratio
-  const { processedImage, transformParams } = processImageWithLetterboxing(
-    image,
-    model
-  );
+    // Run model inference
+    const predictions = model.predict(processedImage) as Tensor3D;
 
-  // Run model inference
-  const predictions = model.predict(processedImage) as Tensor3D;
+    // Extract best prediction and transform coordinates back to original image space
+    const bestPrediction = getBestPrediction(predictions);
+    const scaledPrediction = scalePrediction(bestPrediction, transformParams);
 
-  // Extract best prediction and transform coordinates back to original image space
-  const bestPrediction = await getBestPrediction(predictions);
-  const scaledPrediction = scalePrediction(bestPrediction, transformParams);
-
-  // Render results on canvas
-  renderPrediction({
-    canvas,
-    source: image,
-    ...scaledPrediction,
-    width: transformParams.originalWidth,
-    height: transformParams.originalHeight,
+    // Render results on canvas
+    renderPrediction({
+      canvas,
+      source: image,
+      ...scaledPrediction,
+      width: transformParams.originalWidth,
+      height: transformParams.originalHeight,
+    });
   });
-
-  // Clean up GPU memory
-  dispose([processedImage, predictions]);
 }
 
 // Start the application
