@@ -11,6 +11,7 @@ export default defineConfig({
         letterboxInputProcessing: "03-letterbox-input-processing.html",
         letterboxOutputProcessing: "04-letterbox-output-processing.html",
         liveVideo: "05-live-video.html",
+        test: "test.html",
       },
     },
   },
