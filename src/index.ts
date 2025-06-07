@@ -12,32 +12,78 @@ import {
   GraphModel,
 } from "@tensorflow/tfjs";
 
+/** Bounding box in corner format: [x1, y1, x2, y2] */
+type BoundingBox = [number, number, number, number];
+
+/** Keypoint with coordinates and confidence: [x, y, confidence] */
+type Keypoint = [number, number, number];
+
+/** Model prediction containing bounding box, confidence score, and keypoints */
+interface Prediction {
+  box: BoundingBox;
+  score: number;
+  keypoints: Keypoint[];
+}
+
+/** Parameters for transforming coordinates from model space to original image space */
+interface TransformParams {
+  scale: number;
+  xOffset: number;
+  yOffset: number;
+  originalWidth: number;
+  originalHeight: number;
+}
+
+/** Result of image processing with letterboxing */
+interface ProcessedImageResult {
+  processedImage: Tensor3D;
+  transformParams: TransformParams;
+}
+
+/** Props for rendering predictions on canvas */
+interface RenderPredictionProps {
+  canvas: HTMLCanvasElement;
+  score: number;
+  box: BoundingBox;
+  keypoints: Keypoint[];
+  source: HTMLImageElement;
+  width: number;
+  height: number;
+}
+
+/**
+ * Transform a single coordinate from model space back to original image space.
+ *
+ * @param coord - Coordinate value in model space
+ * @param scale - Scale factor to convert from model space to letterboxed space
+ * @param offset - Offset to subtract after scaling to account for letterboxing padding
+ * @returns Transformed coordinate in original image space
+ */
 function transformCoordinate(
   coord: number,
   scale: number,
   offset: number
 ): number {
-  // Transform coordinates from model space back to original image space
   return coord * scale - offset;
 }
 
+/**
+ * Scale prediction coordinates from model space back to original image space.
+ * This accounts for both the letterboxing padding and the resize operation.
+ *
+ * @param prediction - Raw prediction from the model with coordinates in model space
+ * @param transformParams - Transformation parameters including scale and offsets
+ * @returns Prediction with coordinates transformed to original image space
+ */
 function scalePrediction(
-  prediction: {
-    box: [number, number, number, number];
-    score: number;
-    keypoints: [number, number, number][];
-  },
-  transformParams: {
-    scale: number;
-    xOffset: number;
-    yOffset: number;
-  }
-) {
+  prediction: Prediction,
+  transformParams: TransformParams
+): Prediction {
   const { scale, xOffset, yOffset } = transformParams;
 
   // Transform bounding box coordinates
   const [modelX1, modelY1, modelX2, modelY2] = prediction.box;
-  const scaledBox: [number, number, number, number] = [
+  const scaledBox: BoundingBox = [
     transformCoordinate(modelX1, scale, xOffset),
     transformCoordinate(modelY1, scale, yOffset),
     transformCoordinate(modelX2, scale, xOffset),
@@ -45,7 +91,7 @@ function scalePrediction(
   ];
 
   // Transform keypoint coordinates
-  const scaledKeypoints: [number, number, number][] = prediction.keypoints.map(
+  const scaledKeypoints: Keypoint[] = prediction.keypoints.map(
     ([x, y, confidence]) => [
       transformCoordinate(x, scale, xOffset),
       transformCoordinate(y, scale, yOffset),
@@ -60,50 +106,56 @@ function scalePrediction(
   };
 }
 
-function renderPrediction(props: {
-  canvas: HTMLCanvasElement;
-  score: number;
-  box: [number, number, number, number];
-  keypoints: [number, number, number][];
-  source: HTMLImageElement;
-  width: number;
-  height: number;
-}) {
-  const threshold = 0.5;
+/**
+ * Render pose estimation prediction on a canvas.
+ * Draws the original image, bounding box, and keypoints with confidence above threshold.
+ *
+ * @param props - Rendering configuration including canvas, prediction data, and source image
+ */
+function renderPrediction(props: RenderPredictionProps): void {
+  const CONFIDENCE_THRESHOLD = 0.5;
   const { canvas, box, keypoints, source, score, width, height } = props;
 
-  if (score < threshold) {
+  // Skip rendering if prediction confidence is too low
+  if (score < CONFIDENCE_THRESHOLD) {
     return;
   }
 
+  // Set up canvas
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, width, height);
   ctx.drawImage(source, 0, 0, width, height);
 
-  // Draw bounding box (coordinates are already transformed)
+  // Draw bounding box (coordinates are already transformed to original image space)
   const [x1, y1, x2, y2] = box;
   ctx.strokeStyle = "lime";
   ctx.lineWidth = 2;
   ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
 
-  // Draw keypoints (coordinates are already transformed)
+  // Draw keypoints (coordinates are already transformed to original image space)
+  ctx.fillStyle = "red";
   for (const [x, y, confidence] of keypoints) {
-    if (confidence > threshold) {
+    if (confidence > CONFIDENCE_THRESHOLD) {
       ctx.beginPath();
       ctx.arc(x, y, 5, 0, 2 * Math.PI);
-      ctx.fillStyle = "red";
       ctx.fill();
     }
   }
 }
 
-async function getBestPrediction(predictions: Tensor3D): Promise<{
-  box: [number, number, number, number];
-  score: number;
-  keypoints: [number, number, number][];
-}> {
+/**
+ * Extract the best prediction from YOLOv8 pose model output.
+ * Processes the raw model output tensor to find the prediction with highest confidence,
+ * converts bounding box from center format to corner format, and formats keypoints.
+ *
+ * @param predictions - Raw model output tensor with shape [1, 56, 8400]
+ *                     56 channels: [x, y, w, h, conf, kpt1_x, kpt1_y, kpt1_c, ..., kpt17_x, kpt17_y, kpt17_c]
+ *                     8400 predictions: different potential detections across the image
+ * @returns Promise resolving to the best prediction with bounding box, score, and keypoints
+ */
+async function getBestPrediction(predictions: Tensor3D): Promise<Prediction> {
   // Reshape predictions from [1, 56, 8400] to [1, 8400, 56] for easier processing
   // Each of the 8400 predictions now has 56 values: [x, y, w, h, conf, kpt1_x, kpt1_y, kpt1_c, ...]
   const reshapedPredictions = predictions.transpose([0, 2, 1]);
@@ -151,7 +203,7 @@ async function getBestPrediction(predictions: Tensor3D): Promise<{
 
   // Convert keypoints tensor to array and group into [x, y, confidence] triplets
   const keypointsData = [...(await bestKeypointsTensor.data())];
-  const formattedKeypoints: [number, number, number][] = [];
+  const formattedKeypoints: Keypoint[] = [];
 
   for (let i = 0; i < keypointsData.length; i += 3) {
     const x = keypointsData[i];
@@ -159,12 +211,8 @@ async function getBestPrediction(predictions: Tensor3D): Promise<{
     const confidence = keypointsData[i + 2];
     formattedKeypoints.push([x, y, confidence]);
   }
-  const boxData = [...(await bestBoundingBox.data())] as [
-    number,
-    number,
-    number,
-    number
-  ];
+
+  const boxData = [...(await bestBoundingBox.data())] as BoundingBox;
 
   // Clean up tensors to prevent memory leaks
   dispose([
@@ -193,14 +241,19 @@ async function getBestPrediction(predictions: Tensor3D): Promise<{
 }
 
 /**
- * Apply letterboxing to maintain aspect ratio when resizing for model input
- * Letterboxing adds padding (black bars) to make the image square before resizing
- * This prevents distortion that would occur with direct resizing
+ * Apply letterboxing to maintain aspect ratio when resizing for model input.
+ * Letterboxing adds padding (black bars) to make the image square before resizing.
+ * This prevents distortion that would occur with direct resizing of non-square images.
+ *
+ * @param image - Source image element to process
+ * @param model - TensorFlow.js model to get input shape requirements
+ * @returns Object containing the processed image tensor and transformation parameters
+ *          needed to map predictions back to original image coordinates
  */
 function processImageWithLetterboxing(
   image: HTMLImageElement,
   model: GraphModel
-) {
+): ProcessedImageResult {
   // Get model's expected input dimensions
   const modelInputShape = model.inputs[0].shape!;
   const [modelHeight, modelWidth] = modelInputShape.slice(1, 3);
@@ -224,15 +277,6 @@ function processImageWithLetterboxing(
   const topPadding = Math.floor(totalHeightPadding / 2);
   const bottomPadding = totalHeightPadding - topPadding;
 
-  console.log(`Original: ${originalWidth}x${originalHeight}`);
-  // Original: 250x405
-  console.log(`Target square: ${targetSquareSize}x${targetSquareSize}`);
-  // Target square: 405x405
-  console.log(
-    `Padding: top=${topPadding}, bottom=${bottomPadding}, left=${leftPadding}, right=${rightPadding}`
-  );
-  // Padding: top=0, bottom=0, left=77, right=78
-
   // Step 2: Apply letterboxing by adding padding (creates black bars)
   const letterboxedImage = originalImageTensor.pad<Tensor3D>([
     [topPadding, bottomPadding], // Height padding
@@ -254,16 +298,11 @@ function processImageWithLetterboxing(
   const xOffset = leftPadding; // X displacement caused by letterboxing
   const yOffset = topPadding; // Y displacement caused by letterboxing
 
-  console.log(
-    `Transformation - scale: ${scale}, xOffset: ${xOffset}, yOffset: ${yOffset}`
-  );
-  // Transformation - scale: 0.6328125, xOffset: 77, yOffset: 0
-
   // Clean up intermediate tensors
   dispose([originalImageTensor, letterboxedImage, resizedImage]);
 
   return {
-    processedImage: batchedImage,
+    processedImage: batchedImage as Tensor3D,
     transformParams: {
       scale,
       xOffset,
@@ -274,19 +313,40 @@ function processImageWithLetterboxing(
   };
 }
 
-async function main() {
+/**
+ * Main application function that orchestrates the entire pose estimation pipeline.
+ *
+ * Pipeline:
+ * 1. Load YOLOv8 pose estimation model
+ * 2. Process input image with letterboxing to maintain aspect ratio
+ * 3. Run model inference to get pose predictions
+ * 4. Extract the best prediction and scale coordinates back to original image space
+ * 5. Render the results on canvas with bounding box and keypoints
+ */
+async function main(): Promise<void> {
+  // Get DOM elements
   const image = document.querySelector("img")!;
   const canvas = document.querySelector("canvas")!;
+
+  // Load YOLOv8 pose estimation model
   const modelURL =
     import.meta.env.BASE_URL + "models/yolov8n-pose_web_model/model.json";
   const model = await loadGraphModel(modelURL);
+
+  // Process image with letterboxing to maintain aspect ratio
   const { processedImage, transformParams } = processImageWithLetterboxing(
     image,
     model
   );
+
+  // Run model inference
   const predictions = model.predict(processedImage) as Tensor3D;
+
+  // Extract best prediction and transform coordinates back to original image space
   const bestPrediction = await getBestPrediction(predictions);
   const scaledPrediction = scalePrediction(bestPrediction, transformParams);
+
+  // Render results on canvas
   renderPrediction({
     canvas,
     source: image,
@@ -294,6 +354,10 @@ async function main() {
     width: transformParams.originalWidth,
     height: transformParams.originalHeight,
   });
+
+  // Clean up GPU memory
   dispose([processedImage, predictions]);
 }
+
+// Start the application
 main();
