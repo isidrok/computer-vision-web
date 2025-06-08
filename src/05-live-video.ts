@@ -151,7 +151,7 @@ async function startVideo({
   video.srcObject = stream;
 
   return new Promise<void>((resolve) => {
-    video.addEventListener("loadeddata", () => resolve(), { once: true });
+    video.addEventListener("onloadedmetadata", () => resolve(), { once: true });
   });
 }
 

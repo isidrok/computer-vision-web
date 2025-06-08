@@ -46,7 +46,7 @@ interface RenderPredictionProps {
   score: number;
   box: BoundingBox;
   keypoints: Keypoint[];
-  source: HTMLImageElement;
+  source: HTMLImageElement | HTMLVideoElement;
   width: number;
   height: number;
 }
@@ -232,7 +232,7 @@ function getBestPrediction(predictions: Tensor3D): Prediction {
  *          needed to map predictions back to original image coordinates
  */
 function processImageWithLetterboxing(
-  image: HTMLImageElement,
+  source: HTMLImageElement | HTMLVideoElement,
   model: GraphModel
 ): ProcessedImageResult {
   // Get model's expected input dimensions
@@ -240,12 +240,12 @@ function processImageWithLetterboxing(
   const [modelHeight, modelWidth] = modelInputShape.slice(1, 3);
 
   // Convert image to tensor and normalize to [0, 1]
-  const originalImageTensor = tfBrowser.fromPixels(image).toFloat().div(255);
+  const originalImageTensor = tfBrowser.fromPixels(source).toFloat().div(255);
 
   // Step 1: Calculate letterboxing parameters
   // Find the larger dimension to determine the target square size
-  const originalWidth = image.width;
-  const originalHeight = image.height;
+  const originalWidth = source.width;
+  const originalHeight = source.height;
   const targetSquareSize = Math.max(originalWidth, originalHeight);
 
   // Calculate how much padding is needed on each axis
@@ -292,28 +292,80 @@ function processImageWithLetterboxing(
 }
 
 /**
- * Main application function that orchestrates the entire pose estimation pipeline.
- *
- * Pipeline:
- * 1. Load YOLOv8 pose estimation model
- * 2. Process input image with letterboxing to maintain aspect ratio
- * 3. Run model inference to get pose predictions
- * 4. Extract the best prediction and scale coordinates back to original image space
- * 5. Render the results on canvas with bounding box and keypoints
+ * Initialize and start video capture from the user's camera.
+ * Automatically adjusts dimensions for portrait mode by swapping width and height.
+ * 
+ * @param params - Configuration object for video setup
+ * @param params.video - HTML video element to receive the camera stream
+ * @param params.width - Desired video width in pixels
+ * @param params.height - Desired video height in pixels
+ * @returns Promise that resolves when video metadata is loaded and ready for use
  */
-async function main(): Promise<void> {
-  // Get DOM elements
-  const image = document.querySelector("img")!;
-  const canvas = document.querySelector("canvas")!;
+async function startVideo({
+  video,
+  width,
+  height,
+}: {
+  video: HTMLVideoElement;
+  width: number;
+  height: number;
+}) {
+  if (window.innerHeight > window.innerWidth) {
+    // Portrait mode: swap width and height
+    [width, height] = [height, width];
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      width,
+      height,
+      facingMode: "user",
+    },
+  });
+  video.srcObject = stream;
 
-  // Load YOLOv8 pose estimation model
-  const modelURL =
-    import.meta.env.BASE_URL + "models/yolov8n-pose_web_model/model.json";
-  const model = await loadGraphModel(modelURL);
+  return new Promise<void>((resolve) => {
+    video.addEventListener("loadedmetadata", () => resolve(), { once: true });
+  });
+}
+
+/**
+ * Stop video capture and release camera resources.
+ * Properly cleans up the media stream to free the camera for other applications.
+ * 
+ * @param video - HTML video element with active camera stream to stop
+ */
+function stopVideo(video: HTMLVideoElement) {
+  const stream = video.srcObject as MediaStream;
+  stream.getTracks().forEach((track) => track.stop());
+  video.srcObject = null;
+}
+
+/**
+ * Process a single frame for pose estimation and render results.
+ * This function runs the complete inference pipeline:
+ * 1. Applies letterboxing to maintain aspect ratio
+ * 2. Runs model inference to detect poses
+ * 3. Extracts and scales the best prediction
+ * 4. Renders results on canvas
+ * 5. Schedules the next frame processing
+ * 
+ * Uses TensorFlow.js tidy() to automatically clean up intermediate tensors
+ * and prevent memory leaks during continuous processing.
+ * 
+ * @param canvas - HTML canvas element where results will be rendered
+ * @param source - Image or video element to process for pose detection
+ * @param model - Loaded YOLOv8 pose estimation model for inference
+ */
+function processImage(
+  canvas: HTMLCanvasElement,
+  source: HTMLImageElement | HTMLVideoElement,
+  model: GraphModel
+): void {
   tidy(() => {
     // Process image with letterboxing to maintain aspect ratio
     const { processedImage, transformParams } = processImageWithLetterboxing(
-      image,
+      source,
       model
     );
 
@@ -327,11 +379,70 @@ async function main(): Promise<void> {
     // Render results on canvas
     renderPrediction({
       canvas,
-      source: image,
+      source,
       ...scaledPrediction,
       width: transformParams.originalWidth,
       height: transformParams.originalHeight,
     });
+
+    // Schedule next frame processing
+    requestAnimationFrame(() => {
+      processImage(canvas, source, model);
+    });
+  });
+}
+
+/**
+ * Main application function that orchestrates the entire pose estimation pipeline.
+ * 
+ * This function sets up the complete real-time pose estimation application:
+ * 1. Initializes DOM elements (button, video, canvas)
+ * 2. Loads the YOLOv8 pose estimation model
+ * 3. Sets up event handlers for start/stop functionality
+ * 4. Manages video capture and processing lifecycle
+ * 
+ * The application uses a toggle button to start/stop the camera and pose detection.
+ * When running, it continuously processes video frames and displays pose keypoints
+ * and bounding boxes on an overlay canvas.
+ * 
+ * Pipeline overview:
+ * 1. Load YOLOv8 pose estimation model from public/models directory
+ * 2. Process input video frames with letterboxing to maintain aspect ratio
+ * 3. Run model inference to get pose predictions
+ * 4. Extract the best prediction and scale coordinates back to original image space
+ * 5. Render the results on canvas with bounding box and keypoints
+ * 
+ */
+async function main(): Promise<void> {
+  // Get DOM elements
+  const toggle = document.querySelector("button")!;
+  const video = document.querySelector("video")!;
+  const canvas = document.querySelector("canvas")!;
+  // Load YOLOv8 pose estimation model
+  const modelURL =
+    import.meta.env.BASE_URL + "models/yolov8n-pose_web_model/model.json";
+  const model = await loadGraphModel(modelURL);
+  let running = false;
+  toggle.addEventListener("click", async () => {
+    if (running) {
+      toggle.textContent = "Start";
+      stopVideo(video);
+    } else {
+      toggle.textContent = "Stop";
+      const { width, height } = video.getBoundingClientRect();
+      // Since we are not specifying the width and height of the canvas and video
+      // in the html, we need to manually override this attributes to configure
+      // the actual size of the canvas and video buffers
+      canvas.width = width;
+      canvas.height = height;
+      video.width = width;
+      video.height = height;
+      await startVideo({ video, width, height });
+      requestAnimationFrame(() => {
+        processImage(canvas, video, model);
+      });
+    }
+    running = !running;
   });
 }
 

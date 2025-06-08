@@ -4,6 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Computer Vision Web</title>
+    <style>
+      .container {
+        height: 700px;
+        aspect-ratio: 3/4;
+        background: black;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      video,
+      canvas {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        position: absolute;
+        top: 0;
+        left: 0;
+      }
+    </style>
   </head>
   <body>
     <header>
@@ -31,12 +52,11 @@
       </nav>
     </header>
     <main>
-      <img
-        src="https://isidrok.github.io/computer-vision-web/720x405.jpg"
-        alt=""
-        crossorigin="anonymous"
-      />
-      <canvas></canvas>
+      <button>Start</button>
+      <div class="container">
+        <video autoplay playsinline muted width="100%" height="100%"></video>
+        <canvas width="100%" height="100%"></canvas>
+      </div>
     </main>
     <script type="module" src="./src/index.ts"></script>
   </body>
